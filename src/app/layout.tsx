@@ -4,6 +4,11 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Long Slow Distance — Temukan fotomu lewat nomor BIB",
   description: "Album foto event olahraga Long Slow Distance (LSD100 KAKIBESI). Ketik nomor BIB dan temukan fotomu dalam sekejap.",
+  icons: {
+    icon: "/favicon.png",
+    shortcut: "/favicon.png",
+    apple: "/favicon.png",
+  },
 };
 
 export const viewport: Viewport = { themeColor: "#04060c" };

@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import DownloadSheet from "@/components/DownloadSheet";
-import { INDEX_URL, imgUrl, type PhotoIndex } from "@/lib/index-format";
+import { INDEX_URL, directImgUrl, driveThumbFallbackUrl, imgUrl, type IndexedPhoto, type PhotoIndex } from "@/lib/index-format";
 
-const PAGE = 150;
+const PER_PAGE = 100;
 
 const SearchIcon = ({ className = "h-5 w-5" }: { className?: string }) => (
   <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
@@ -13,19 +13,33 @@ const SearchIcon = ({ className = "h-5 w-5" }: { className?: string }) => (
   </svg>
 );
 
+/** Resilient image URL resolver with 3-tier fallback (lh3 CDN -> drive thumbnail -> Vercel proxy). */
+function getPhotoSrc(id: string, w: number, stage: number): string {
+  if (stage === 0) return directImgUrl(id, w);
+  if (stage === 1) return driveThumbFallbackUrl(id, w);
+  if (stage === 2) return imgUrl(id, w);
+  return `${imgUrl(id, w)}&retry=${stage}`;
+}
+
 export default function Gallery() {
   const [index, setIndex] = useState<PhotoIndex | null>(null);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [noBib, setNoBib] = useState(false);
   const [source, setSource] = useState<number | null>(null);
-  const [limit, setLimit] = useState(PAGE);
+  const [page, setPage] = useState(1);
   const [open, setOpen] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [stuck, setStuck] = useState(false);
-  const sentinel = useRef<HTMLDivElement>(null);
+  const [scrollPct, setScrollPct] = useState(0);
+  const [draggingRail, setDraggingRail] = useState(false);
+  const [hdLoaded, setHdLoaded] = useState(false);
+  const [hdStage, setHdStage] = useState(0);
+  const [thumbStage, setThumbStage] = useState(0);
   const heroEnd = useRef<HTMLDivElement>(null);
+  const photosTopRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
   const touch = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -45,7 +59,7 @@ export default function Gallery() {
     if (query) u.searchParams.set("bib", query);
     else u.searchParams.delete("bib");
     window.history.replaceState(null, "", u);
-    setLimit(PAGE);
+    setPage(1);
   }, [query, noBib, source]);
 
   useEffect(() => {
@@ -55,6 +69,30 @@ export default function Gallery() {
     io.observe(el);
     return () => io.disconnect();
   }, [index]);
+
+  useEffect(() => {
+    const onScroll = () => {
+      const doc = document.documentElement;
+      const max = Math.max(1, doc.scrollHeight - window.innerHeight);
+      setScrollPct(Math.min(1, Math.max(0, window.scrollY / max)));
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [index, page, query, noBib, source]);
+
+  const scrollToClientY = (clientY: number) => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const rect = rail.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientY - rect.top) / Math.max(1, rect.height)));
+    const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    window.scrollTo({ top: ratio * max, behavior: "auto" });
+  };
 
   const q = query.trim();
   const { visible, undetected, total } = useMemo(() => {
@@ -69,15 +107,40 @@ export default function Gallery() {
     return { visible, undetected, total: all.length };
   }, [index, q, noBib, source]);
 
-  useEffect(() => {
-    const el = sentinel.current;
-    if (!el) return;
-    const io = new IntersectionObserver((e) => e[0].isIntersecting && setLimit((l) => l + PAGE), { rootMargin: "900px" });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [visible.length]);
+  const totalPages = Math.max(1, Math.ceil(visible.length / PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const startIdx = (currentPage - 1) * PER_PAGE;
+  const shown = visible.slice(startIdx, startIdx + PER_PAGE);
 
-  const go = (d: number) => setOpen((i) => (i === null ? i : Math.max(0, Math.min(i + d, visible.length - 1))));
+  const goToPage = (nextPage: number) => {
+    const target = Math.max(1, Math.min(nextPage, totalPages));
+    setPage(target);
+    requestAnimationFrame(() => {
+      photosTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
+  const go = (d: number) =>
+    setOpen((i) => {
+      if (i === null) return i;
+      const next = Math.max(0, Math.min(i + d, visible.length - 1));
+      setPage(Math.floor(next / PER_PAGE) + 1);
+      return next;
+    });
+
+  // Reset progressive lightbox state & preload neighbor photos when `open` changes
+  useEffect(() => {
+    setHdLoaded(false);
+    setHdStage(0);
+    setThumbStage(0);
+    if (open === null) return;
+    const neighbors = [visible[open + 1], visible[open - 1], visible[open + 2]].filter(Boolean);
+    for (const p of neighbors) {
+      const pre = new Image();
+      pre.referrerPolicy = "no-referrer";
+      pre.src = directImgUrl(p.id, 1600);
+    }
+  }, [open, visible]);
 
   useEffect(() => {
     if (open === null) return;
@@ -115,7 +178,6 @@ export default function Gallery() {
     );
 
   const current = open !== null ? visible[open] : null;
-  const shown = visible.slice(0, limit);
   const filtering = Boolean(q) || noBib;
   const multi = index.sources.length > 1;
   const dashboardTitle = index.title || "Long Slow Distance";
@@ -141,12 +203,12 @@ export default function Gallery() {
           stuck ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"
         }`}
       >
-        <div className="mx-auto flex max-w-7xl items-center gap-3 px-3 py-2 sm:px-6 sm:py-2.5">
-          <div className="flex shrink-0 items-center gap-2">
+        <div className="mx-auto flex max-w-[1600px] items-center gap-3 px-4 py-2.5 sm:px-8 sm:py-3 lg:px-10">
+          <div className="flex shrink-0 items-center gap-2.5">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logos/lsd-logo.png" alt="LSD100" className="h-6 w-auto object-contain sm:h-7" />
+            <img src="/logos/02-logo-lsd.png" alt="LSD100" className="h-6 w-auto object-contain sm:h-7" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logos/kabes-logo.png" alt="Kakibesi Club" className="h-7 w-auto object-contain sm:h-8" />
+            <img src="/logos/01-logo-kakibesi.png" alt="Kakibesi Club" className="h-7 w-auto object-contain sm:h-8" />
           </div>
           <p className="font-display hidden min-w-0 truncate text-sm font-extrabold uppercase italic tracking-tight text-[#f4f5f7] md:block">
             {dashboardTitle}
@@ -168,24 +230,98 @@ export default function Gallery() {
             )}
           </label>
         </div>
+        {/* Top horizontal scroll progress bar */}
+        <div className="h-[2.5px] w-full bg-white/5">
+          <div
+            className="h-full bg-gradient-to-r from-[#1E46E6] via-[#4E73FF] to-[#7aa2ff] shadow-[0_0_10px_#4E73FF] transition-[width] duration-75"
+            style={{ width: `${Math.round(scrollPct * 100)}%` }}
+          />
+        </div>
       </div>
 
+      {/* ---------- Aesthetic Interactive Vertical Scroll Slider Rail ---------- */}
+      {shown.length > 6 && (
+        <div
+          className={`fixed bottom-24 right-1.5 top-24 z-30 flex flex-col items-center gap-2 transition-opacity duration-300 ease-out sm:right-3 ${
+            (stuck || draggingRail) && open === null ? "opacity-100" : "pointer-events-none opacity-0"
+          }`}
+        >
+          <div
+            ref={railRef}
+            role="slider"
+            aria-label="Scroll galeri"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(scrollPct * 100)}
+            tabIndex={0}
+            onPointerDown={(e) => {
+              e.currentTarget.setPointerCapture(e.pointerId);
+              setDraggingRail(true);
+              scrollToClientY(e.clientY);
+            }}
+            onPointerMove={(e) => {
+              if (draggingRail) scrollToClientY(e.clientY);
+            }}
+            onPointerUp={() => setDraggingRail(false)}
+            onPointerCancel={() => setDraggingRail(false)}
+            className="group relative h-full w-3 cursor-pointer touch-none select-none py-1 sm:w-3.5"
+          >
+            {/* Track */}
+            <div className="mx-auto h-full w-1.5 rounded-full bg-[#0a0f1e]/90 ring-1 ring-white/15 backdrop-blur transition-all group-hover:w-2 group-hover:ring-[#4E73FF]/50 sm:w-2" />
+            {/* Filled track */}
+            <div
+              className="pointer-events-none absolute left-1/2 top-1 w-1.5 -translate-x-1/2 rounded-full bg-gradient-to-b from-[#1E46E6]/50 to-[#4E73FF] sm:w-2"
+              style={{ height: `calc(${scrollPct * 100}% - 4px)` }}
+            />
+            {/* Glowing Thumb */}
+            <div
+              className={`pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gradient-to-b from-[#7aa2ff] via-[#4E73FF] to-[#1E46E6] shadow-[0_0_14px_rgba(78,115,255,0.95)] ring-2 ring-white/80 transition-transform ${
+                draggingRail ? "h-9 w-3.5 scale-110" : "h-7 w-2.5 group-hover:h-8 group-hover:w-3 sm:h-8 sm:w-3"
+              }`}
+              style={{ top: `calc(14px + ${scrollPct * 100}% * 0.92)` }}
+            />
+            {/* Percentage badge when dragging or hovering */}
+            <span
+              className={`font-narrow pointer-events-none absolute right-5 -translate-y-1/2 whitespace-nowrap rounded-md border border-[#4E73FF]/40 bg-[#0a0f1e]/95 px-2 py-0.5 text-[11px] font-bold tracking-wider text-[#f4f5f7] shadow-lg transition-opacity ${
+                draggingRail ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+              }`}
+              style={{ top: `calc(14px + ${scrollPct * 100}% * 0.92)` }}
+            >
+              {Math.round(scrollPct * 100)}%
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Floating Scroll-To-Top Button ---------- */}
+      <button
+        type="button"
+        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        aria-label="Kembali ke atas"
+        className={`fixed bottom-5 right-3 z-30 flex h-10 items-center gap-1.5 rounded-full border border-[#4E73FF]/40 bg-[#0a0f1e]/90 px-3.5 text-xs font-bold uppercase tracking-wider text-[#f4f5f7] shadow-[0_8px_25px_rgba(30,70,230,0.45)] backdrop-blur transition-all duration-300 hover:bg-[#1E46E6] active:scale-95 sm:bottom-6 sm:right-5 ${
+          stuck && open === null ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-4 opacity-0"
+        }`}
+      >
+        <span className="text-sm leading-none text-[#4E73FF]">↑</span>
+        <span className="font-narrow">Atas</span>
+      </button>
+
       {/* ---------- Hero ---------- */}
-      <section className="hero safe-top px-4 pb-10 pt-6 text-[#f4f5f7] sm:px-8 sm:pb-14 sm:pt-9 lg:pb-16">
+      <section className="hero px-5 pb-9 pt-[max(1.75rem,calc(env(safe-area-inset-top)+1.25rem))] text-[#f4f5f7] sm:px-8 sm:pb-12 sm:pt-10 lg:px-10 lg:pb-14 lg:pt-8">
         <div className="hero-num" aria-hidden="true">
           <span>100</span>
         </div>
         <div className="hero-scrim" aria-hidden="true" />
 
-        <div className="relative mx-auto max-w-5xl">
-          <div className="flex items-center gap-3.5">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logos/lsd-logo.png" alt="LSD100" className="h-8 w-auto object-contain sm:h-9" />
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logos/kabes-logo.png" alt="Kakibesi Club" className="h-9 w-auto object-contain sm:h-10" />
-          </div>
+        <div className="relative mx-auto flex max-w-[1600px] items-center gap-3.5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logos/02-logo-lsd.png" alt="LSD100" className="h-8 w-auto object-contain sm:h-9" />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logos/01-logo-kakibesi.png" alt="Kakibesi Club" className="h-9 w-auto object-contain sm:h-10" />
+        </div>
 
-          <div className="mt-9 text-center sm:mt-14 lg:mt-16">
+        <div className="relative mx-auto max-w-5xl">
+          <div className="mt-8 text-center sm:mt-12 lg:mt-14">
             <p className="font-narrow animate-rise text-xs font-bold uppercase tracking-[0.22em] text-[#4E73FF] sm:text-sm">
               Event Photo Album · LSD100 KAKIBESI
             </p>
@@ -197,6 +333,9 @@ export default function Gallery() {
             </h1>
             <p className="animate-rise mx-auto mt-3.5 max-w-md text-pretty text-[15px] text-[#8a8f9c] sm:mt-4 sm:max-w-xl sm:text-lg" style={{ animationDelay: "120ms" }}>
               Ketik nomor BIB di dadamu, <span className="font-medium text-[#f4f5f7]">fotomu langsung muncul.</span>
+            </p>
+            <p className="animate-rise mx-auto mt-2 max-w-md text-pretty text-xs leading-relaxed text-[#8a8f9c]/85 sm:mt-2.5 sm:max-w-lg sm:text-[13px]" style={{ animationDelay: "160ms" }}>
+              System mungkin tidak bisa mendeteksi akurat nomor BIB kamu, kamu bisa scroll manual. Dilarang mengunduh foto peserta lain tanpa izin.
             </p>
           </div>
 
@@ -242,17 +381,25 @@ export default function Gallery() {
             </label>
           </div>
 
-          <div className="animate-rise mt-6 flex flex-wrap items-center justify-center gap-2 text-[13px] sm:mt-8 sm:text-sm" style={{ animationDelay: "280ms" }}>
+          <div className="animate-rise mt-6 flex flex-col items-center justify-center gap-3 text-[13px] sm:mt-8 sm:text-sm" style={{ animationDelay: "280ms" }}>
             <Stat label="foto" value={index.photos.length} />
+            <button
+              type="button"
+              onClick={() => photosTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="font-narrow group mt-1 inline-flex items-center gap-2 rounded-full border border-[#4E73FF]/30 bg-[#1E46E6]/15 px-4 py-1.5 text-xs font-bold uppercase tracking-[0.18em] text-[#7aa2ff] transition hover:border-[#4E73FF] hover:bg-[#1E46E6]/30 hover:text-white active:scale-95"
+            >
+              <span>Scroll galeri foto</span>
+              <span className="inline-block animate-bounce text-sm leading-none text-[#4E73FF]">↓</span>
+            </button>
           </div>
         </div>
       </section>
       <div ref={heroEnd} className="h-px" />
 
       {/* ---------- Results ---------- */}
-      <main className="mx-auto mt-5 max-w-[1600px] px-1.5 pb-16 sm:mt-8 sm:px-4">
+      <main className="mx-auto mt-5 max-w-[1600px] px-1.5 pb-16 pr-5 sm:mt-8 sm:px-4 sm:pr-7">
         {multi && (
-          <div className="no-scrollbar -mx-1.5 mb-3 flex gap-2 overflow-x-auto px-3 pb-1 sm:mx-0 sm:px-2" role="tablist" aria-label="Sumber foto">
+          <div className="-mx-1.5 mb-3 flex gap-2 overflow-x-auto px-3 pb-2 sm:mx-0 sm:px-2" role="tablist" aria-label="Sumber foto">
             <Chip active={source === null} onClick={() => setSource(null)}>
               Semua <small className="opacity-70">{index.photos.length}</small>
             </Chip>
@@ -264,7 +411,7 @@ export default function Gallery() {
           </div>
         )}
 
-        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-2.5 sm:px-2">
+        <div ref={photosTopRef} className="mb-3 flex scroll-mt-20 flex-wrap items-center gap-x-3 gap-y-1.5 px-2.5 sm:px-2">
           <h2 className="font-display text-base font-extrabold uppercase italic tracking-tight text-[#f4f5f7] sm:text-lg">
             {noBib ? (
               "Foto tanpa BIB terdeteksi"
@@ -277,8 +424,13 @@ export default function Gallery() {
             )}
           </h2>
           <span className="font-narrow rounded-full border border-white/10 bg-[#0a0f1e] px-3 py-1 text-xs font-semibold uppercase tracking-wider text-[#8a8f9c]">
-            {filtering ? `${visible.length} dari ${total}` : total} foto
+            {visible.length > 0 ? `${startIdx + 1}–${Math.min(startIdx + PER_PAGE, visible.length)} dari ${visible.length}` : "0"} foto
           </span>
+          {totalPages > 1 && (
+            <span className="font-narrow rounded-full border border-[#4E73FF]/30 bg-[#1E46E6]/15 px-3 py-1 text-xs font-bold uppercase tracking-wider text-[#7aa2ff]">
+              Hal {currentPage} / {totalPages}
+            </span>
+          )}
           {filtering && (
             <button
               onClick={() => {
@@ -317,55 +469,69 @@ export default function Gallery() {
         )}
 
         <div className="flex flex-wrap gap-1 sm:gap-2">
-          {shown.map((p, i) => {
-            const ratio = p.w && p.h ? p.w / p.h : 1.5;
-            return (
-              <button
-                key={p.id}
-                onClick={() => setOpen(i)}
-                className="tile group relative overflow-hidden rounded-xl shadow-sm ring-1 ring-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4E73FF] sm:rounded-2xl"
-                style={{
-                  width: `calc(var(--row-h) * ${ratio})`,
-                  flexGrow: ratio * 100,
-                  maxWidth: `min(calc(var(--row-h) * ${ratio * 1.8}), 100%)`,
-                }}
-              >
-                <i className="block" style={{ paddingBottom: `${(1 / ratio) * 100}%` }} />
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={imgUrl(p.id, 640)}
-                  alt={p.b?.length ? `Foto BIB ${p.b.join(", ")}` : "Foto event"}
-                  loading="lazy"
-                  decoding="async"
-                  onLoad={(e) => (e.currentTarget.style.opacity = "1")}
-                  style={{ opacity: 0 }}
-                  className="absolute inset-0 h-full w-full object-cover"
-                />
-                <span className="absolute inset-0 bg-gradient-to-t from-[#04060c]/75 via-transparent to-transparent opacity-0 transition duration-300 group-hover:opacity-100" />
-                {p.b && p.b.length > 0 && (
-                  <span
-                    className={`bibs absolute bottom-1.5 left-1.5 flex max-w-[94%] flex-wrap gap-1 transition duration-300 sm:bottom-2 sm:left-2 ${
-                      q ? "opacity-100" : "translate-y-1 opacity-0 group-hover:translate-y-0 group-hover:opacity-100"
-                    }`}
-                  >
-                    {p.b.slice(0, 3).map((b) => (
-                      <span
-                        key={b}
-                        className={`font-display rounded px-1.5 py-0.5 text-[10px] font-black tracking-wider shadow sm:text-[11px] ${
-                          b === q ? "bg-[#1E46E6] text-white ring-1 ring-[#4E73FF]" : "bg-[#04060c]/90 text-[#f4f5f7] ring-1 ring-white/15"
-                        }`}
-                      >
-                        {b}
-                      </span>
-                    ))}
-                  </span>
-                )}
-              </button>
-            );
-          })}
+          {shown.map((p, i) => (
+            <PhotoTile key={p.id} photo={p} query={q} onClick={() => setOpen(startIdx + i)} />
+          ))}
           <span className="grow-[100]" />
         </div>
-        <div ref={sentinel} className="h-8" />
+
+        {/* ---------- Pagination Bar (100 photos per page, no page reload) ---------- */}
+        {totalPages > 1 && (
+          <nav
+            aria-label="Navigasi halaman foto"
+            className="mt-8 flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-[#0a0f1e]/90 p-4 shadow-xl backdrop-blur sm:mt-10 sm:flex-row sm:justify-between sm:px-6"
+          >
+            <div className="font-narrow text-xs font-semibold uppercase tracking-wider text-[#8a8f9c] sm:text-sm">
+              Halaman <b className="text-[#f4f5f7]">{currentPage}</b> dari <b className="text-[#f4f5f7]">{totalPages}</b>{" "}
+              <span className="opacity-75">
+                ({startIdx + 1}–{Math.min(startIdx + PER_PAGE, visible.length)} dari {visible.length} foto)
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2">
+              <button
+                type="button"
+                disabled={currentPage <= 1}
+                onClick={() => goToPage(currentPage - 1)}
+                className="font-narrow flex h-10 items-center gap-1.5 rounded-xl border border-white/15 bg-[#04060c] px-3.5 text-xs font-bold uppercase tracking-wider text-[#f4f5f7] transition hover:border-[#4E73FF] hover:text-white active:scale-95 disabled:pointer-events-none disabled:opacity-35 sm:text-sm"
+              >
+                <span>←</span>
+                <span>Sebelumnya</span>
+              </button>
+
+              <div className="flex items-center gap-1">
+                {Array.from({ length: totalPages }, (_, idx) => idx + 1).map((pNum) => {
+                  const active = pNum === currentPage;
+                  return (
+                    <button
+                      key={pNum}
+                      type="button"
+                      onClick={() => goToPage(pNum)}
+                      aria-current={active ? "page" : undefined}
+                      className={`font-display h-10 min-w-[2.5rem] rounded-xl px-2.5 text-sm font-black transition active:scale-95 ${
+                        active
+                          ? "bg-[#1E46E6] text-white shadow-lg shadow-[#1E46E6]/40 ring-1 ring-[#4E73FF]"
+                          : "border border-white/10 bg-[#04060c] text-[#8a8f9c] hover:border-white/30 hover:text-[#f4f5f7]"
+                      }`}
+                    >
+                      {pNum}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                disabled={currentPage >= totalPages}
+                onClick={() => goToPage(currentPage + 1)}
+                className="font-narrow flex h-10 items-center gap-1.5 rounded-xl bg-[#1E46E6] px-4 text-xs font-bold uppercase tracking-wider text-white shadow-lg shadow-[#1E46E6]/35 ring-1 ring-[#4E73FF] transition hover:bg-[#4E73FF] active:scale-95 disabled:pointer-events-none disabled:opacity-35 sm:text-sm"
+              >
+                <span>Selanjutnya</span>
+                <span>→</span>
+              </button>
+            </div>
+          </nav>
+        )}
 
         {!filtering && undetected > 0 && (
           <div className="mt-6 text-center">
@@ -384,7 +550,13 @@ export default function Gallery() {
       {current && (
         <div className="animate-pop fixed inset-0 z-50 flex h-dvh flex-col bg-[#04060c]" role="dialog" aria-modal="true">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={imgUrl(current.id, 640)} alt="" aria-hidden className="pointer-events-none absolute inset-0 h-full w-full scale-125 object-cover opacity-30 blur-3xl" />
+          <img
+            src={getPhotoSrc(current.id, 640, thumbStage)}
+            referrerPolicy="no-referrer"
+            alt=""
+            aria-hidden
+            className="pointer-events-none absolute inset-0 h-full w-full scale-125 object-cover opacity-30 blur-3xl"
+          />
 
           <div className="safe-top relative">
             <div className="flex items-center gap-2 px-2.5 py-2.5 text-white sm:gap-3 sm:px-5 sm:py-3">
@@ -428,20 +600,43 @@ export default function Gallery() {
           </div>
 
           <div
-            className="relative flex min-h-0 flex-1 items-center justify-center px-2 pb-3 sm:px-20 md:pb-5"
+            className="relative flex min-h-0 flex-1 items-center justify-center px-2 pb-14 sm:px-20 md:pb-12"
             onClick={() => setOpen(null)}
             onTouchStart={onTouchStart}
             onTouchEnd={onTouchEnd}
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              key={current.id}
-              src={imgUrl(current.id, 2048)}
-              alt=""
+            {/* Progressive Image Container: Instant 640px cached thumbnail + seamless 1600px HD overlay */}
+            <div
               onClick={(e) => e.stopPropagation()}
-              className="animate-pop max-h-full max-w-full select-none rounded-lg object-contain shadow-2xl sm:rounded-xl"
-              draggable={false}
-            />
+              className="animate-pop relative flex max-h-full max-w-full items-center justify-center"
+            >
+              {/* Layer 1: Already-cached 640px thumbnail shows immediately in 0ms */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                key={`thumb-${current.id}`}
+                src={getPhotoSrc(current.id, 640, thumbStage)}
+                referrerPolicy="no-referrer"
+                alt=""
+                onError={() => setThumbStage((s) => (s < 3 ? s + 1 : s))}
+                className="max-h-[calc(100dvh-130px)] max-w-full select-none rounded-lg object-contain shadow-2xl sm:rounded-xl"
+                draggable={false}
+              />
+              {/* Layer 2: High-resolution 1600px image fades in smoothly on top */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                key={`hd-${current.id}-${hdStage}`}
+                src={getPhotoSrc(current.id, 1600, hdStage)}
+                referrerPolicy="no-referrer"
+                alt=""
+                onLoad={() => setHdLoaded(true)}
+                onError={() => setHdStage((s) => (s < 3 ? s + 1 : s))}
+                className={`absolute inset-0 h-full w-full select-none rounded-lg object-contain transition-opacity duration-300 sm:rounded-xl ${
+                  hdLoaded ? "opacity-100" : "opacity-0"
+                }`}
+                draggable={false}
+              />
+            </div>
+
             {open! > 0 && (
               <button
                 onClick={(e) => {
@@ -449,7 +644,7 @@ export default function Gallery() {
                   go(-1);
                 }}
                 aria-label="Sebelumnya"
-                className="absolute left-1.5 hidden h-12 w-12 place-items-center rounded-full bg-white/10 text-3xl text-white backdrop-blur transition hover:bg-white/25 sm:left-4 sm:grid"
+                className="absolute left-2 grid h-11 w-11 place-items-center rounded-full border border-white/20 bg-[#0a0f1e]/80 text-2xl text-white shadow-lg backdrop-blur transition hover:border-[#4E73FF] hover:bg-[#1E46E6] active:scale-95 sm:left-4 sm:h-12 sm:w-12 sm:text-3xl"
               >
                 ‹
               </button>
@@ -461,20 +656,89 @@ export default function Gallery() {
                   go(1);
                 }}
                 aria-label="Berikutnya"
-                className="absolute right-1.5 hidden h-12 w-12 place-items-center rounded-full bg-white/10 text-3xl text-white backdrop-blur transition hover:bg-white/25 sm:right-4 sm:grid"
+                className="absolute right-2 grid h-11 w-11 place-items-center rounded-full border border-white/20 bg-[#0a0f1e]/80 text-2xl text-white shadow-lg backdrop-blur transition hover:border-[#4E73FF] hover:bg-[#1E46E6] active:scale-95 sm:right-4 sm:h-12 sm:w-12 sm:text-3xl"
               >
                 ›
               </button>
             )}
-            <span className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-3 py-1 text-xs tabular-nums text-white/80 backdrop-blur md:hidden">
-              {open! + 1} / {visible.length}
-            </span>
+
+            {/* Aesthetic bottom slide bar & counter */}
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-3 rounded-full border border-white/15 bg-[#0a0f1e]/90 px-4 py-1.5 text-xs tabular-nums text-[#f4f5f7] shadow-xl backdrop-blur"
+            >
+              <span className="font-narrow font-bold tracking-wider">
+                {open! + 1} <span className="text-[#8a8f9c]">/ {visible.length}</span>
+              </span>
+              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-white/10 sm:w-32">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-[#1E46E6] to-[#4E73FF] transition-all duration-200"
+                  style={{ width: `${((open! + 1) / Math.max(1, visible.length)) * 100}%` }}
+                />
+              </div>
+            </div>
           </div>
         </div>
       )}
 
       {current && saving && <DownloadSheet photo={current} title={dashboardTitle} onClose={() => setSaving(false)} />}
     </div>
+  );
+}
+
+function PhotoTile({ photo: p, query: q, onClick }: { photo: IndexedPhoto; query: string; onClick: () => void }) {
+  const [loaded, setLoaded] = useState(false);
+  const [stage, setStage] = useState(0);
+  const ratio = p.w && p.h ? p.w / p.h : 1.5;
+
+  return (
+    <button
+      onClick={onClick}
+      className="tile group relative overflow-hidden rounded-xl shadow-sm ring-1 ring-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4E73FF] sm:rounded-2xl"
+      style={{
+        width: `calc(var(--row-h) * ${ratio})`,
+        flexGrow: ratio * 100,
+        maxWidth: `min(calc(var(--row-h) * ${ratio * 1.8}), 100%)`,
+      }}
+    >
+      <i className="block" style={{ paddingBottom: `${(1 / ratio) * 100}%` }} />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        ref={(el) => {
+          if (el?.complete && el.naturalWidth > 0 && !loaded) setLoaded(true);
+        }}
+        src={getPhotoSrc(p.id, 640, stage)}
+        referrerPolicy="no-referrer"
+        alt={p.b?.length ? `Foto BIB ${p.b.join(", ")}` : "Foto event"}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => setLoaded(true)}
+        onError={() => {
+          if (stage < 3) setStage((s) => s + 1);
+        }}
+        style={{ opacity: loaded ? 1 : 0 }}
+        className="absolute inset-0 h-full w-full object-cover"
+      />
+      <span className="absolute inset-0 bg-gradient-to-t from-[#04060c]/75 via-transparent to-transparent opacity-0 transition duration-300 group-hover:opacity-100" />
+      {p.b && p.b.length > 0 && (
+        <span
+          className={`bibs absolute bottom-1.5 left-1.5 flex max-w-[94%] flex-wrap gap-1 transition duration-300 sm:bottom-2 sm:left-2 ${
+            q ? "opacity-100" : "translate-y-1 opacity-0 group-hover:translate-y-0 group-hover:opacity-100"
+          }`}
+        >
+          {p.b.slice(0, 3).map((b) => (
+            <span
+              key={b}
+              className={`font-display rounded px-1.5 py-0.5 text-[10px] font-black tracking-wider shadow sm:text-[11px] ${
+                b === q ? "bg-[#1E46E6] text-white ring-1 ring-[#4E73FF]" : "bg-[#04060c]/90 text-[#f4f5f7] ring-1 ring-white/15"
+              }`}
+            >
+              {b}
+            </span>
+          ))}
+        </span>
+      )}
+    </button>
   );
 }
 

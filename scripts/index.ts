@@ -1,5 +1,5 @@
 /**
- * Offline indexer:  npm run index [-- --workers 4 --limit 100 --force]
+ * Offline indexer:  npm run index [-- --workers 8 --limit 100 --force]
  *
  * Reads every source in src/lib/sources.ts (Google Photos album / Google Drive folder), runs OCR ONCE
  * per photo (in parallel processes) and writes public/data/index.json. The website then only does an
@@ -17,6 +17,7 @@ import { PHOTO_PREFIX, type IndexedPhoto, type PhotoIndex, type SourceInfo } fro
 
 const ROOT = path.resolve(__dirname, "..");
 const OUT = path.join(ROOT, "public/data/index.json");
+const PIPELINE_DEPTH = 3;
 
 function arg(name: string, def?: string) {
   const i = process.argv.indexOf(`--${name}`);
@@ -24,7 +25,7 @@ function arg(name: string, def?: string) {
 }
 
 async function main() {
-  const workers = Math.max(1, Number(arg("workers", String(Math.max(1, Math.min(4, os.cpus().length - 1))))));
+  const workers = Math.max(1, Number(arg("workers", String(Math.max(1, Math.min(8, os.cpus().length - 1))))));
   const limit = Number(arg("limit", "0"));
   const force = process.argv.includes("--force");
 
@@ -75,13 +76,13 @@ async function main() {
     fs.renameSync(OUT + ".tmp", OUT);
   };
 
+  save();
   if (!todo.length) {
-    save();
     console.log("Tidak ada foto baru. Index sudah terbaru.");
     return;
   }
 
-  // 3) OCR in parallel worker processes
+  // 3) OCR in parallel worker processes with pipelined I/O
   const t0 = Date.now();
   let finished = 0, failed = 0, withBib = 0;
   const queue = [...todo];
@@ -89,17 +90,22 @@ async function main() {
   await new Promise<void>((resolve) => {
     let alive = workers;
     for (let w = 0; w < workers; w++) {
+      let inFlight = 0;
       const child = fork(path.join(__dirname, "index-worker.ts"), [], { execArgv: ["--import", "tsx"] });
-      const next = () => {
-        const id = queue.shift();
-        if (id) child.send({ id });
-        else {
+      const feed = () => {
+        while (inFlight < PIPELINE_DEPTH && queue.length > 0) {
+          const id = queue.shift()!;
+          inFlight++;
+          child.send({ id });
+        }
+        if (inFlight === 0 && queue.length === 0) {
           child.kill();
           if (--alive === 0) resolve();
         }
       };
       child.on("message", (m: { type: string; id?: string; bibs?: string[]; w?: number; h?: number; error?: string }) => {
-        if (m.type === "ready") return next();
+        if (m.type === "ready") return feed();
+        inFlight--;
         finished++;
         if (m.type === "done") {
           const p = byId.get(m.id!)!;
@@ -113,13 +119,13 @@ async function main() {
           failed++;
           console.error(`  gagal ${m.id!.slice(-10)}: ${m.error}`);
         }
-        if (finished % 25 === 0 || finished === todo.length) {
+        if (finished % 50 === 0 || finished === todo.length) {
           const rate = finished / ((Date.now() - t0) / 1000);
           const eta = Math.round((todo.length - finished) / rate / 60);
           console.log(`  ${finished}/${todo.length}  (${rate.toFixed(1)} foto/dtk, sisa ±${eta} menit, BIB terdeteksi di ${withBib})`);
           save();
         }
-        next();
+        feed();
       });
     }
   });

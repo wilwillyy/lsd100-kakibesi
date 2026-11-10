@@ -1,6 +1,6 @@
 /**
  * Indexer worker (one process = one OCR engine). Receives photo jobs from scripts/index.ts,
- * downloads the photo, runs PP-OCR and replies with the detected BIB numbers + image size.
+ * prefetches/decodes images in parallel with network I/O, and runs PP-OCR sequentially per worker.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -30,6 +30,20 @@ async function download(url: string): Promise<Buffer> {
   }
 }
 
+async function fetchAndDecode(id: string) {
+  let buf: Buffer;
+  try {
+    buf = await download(upstreamUrl(id, 1280));
+  } catch {
+    buf = await download(originalUrl(id));
+  }
+  return sharp(buf)
+    .resize({ width: 1280, withoutEnlargement: true })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+}
+
 async function main() {
   const dict = fs.readFileSync(path.join(MODELS, "keys.txt"), "utf8").split("\n").map((s) => s.replace(/\r$/, ""));
   const engine = await PpOcr.create(
@@ -40,20 +54,21 @@ async function main() {
   );
   process.send!({ type: "ready" });
 
-  process.on("message", async (msg: { id: string }) => {
-    try {
-      let buf: Buffer;
+  let ocrChain = Promise.resolve();
+
+  process.on("message", (msg: { id: string }) => {
+    // Start network download + sharp decode immediately so I/O overlaps with current OCR
+    const decodedPromise = fetchAndDecode(msg.id);
+
+    ocrChain = ocrChain.then(async () => {
       try {
-        buf = await download(upstreamUrl(msg.id, 1600));
-      } catch {
-        buf = await download(originalUrl(msg.id));
+        const { data, info } = await decodedPromise;
+        const bibs = await readBibsFromImg(engine, { data, width: info.width, height: info.height });
+        process.send!({ type: "done", id: msg.id, bibs, w: info.width, h: info.height });
+      } catch (e) {
+        process.send!({ type: "error", id: msg.id, error: String((e as Error).message ?? e) });
       }
-      const { data, info } = await sharp(buf).resize({ width: 1600, withoutEnlargement: true }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-      const bibs = await readBibsFromImg(engine, { data, width: info.width, height: info.height });
-      process.send!({ type: "done", id: msg.id, bibs, w: info.width, h: info.height });
-    } catch (e) {
-      process.send!({ type: "error", id: msg.id, error: String((e as Error).message ?? e) });
-    }
+    });
   });
 }
 

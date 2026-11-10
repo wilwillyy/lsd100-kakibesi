@@ -8,6 +8,7 @@ export type SourceConfig = { type: "photos" | "drive"; url: string };
 export const EVENT_TITLE = process.env.EVENT_TITLE || "Long Slow Distance";
 
 export const SOURCES: SourceConfig[] = [
-  { type: "photos", url: "https://photos.app.goo.gl/gyFmdprLbJWH1M4B6" },
+  { type: "photos", url: "https://photos.app.goo.gl/Gi6Xkv1auavZkrZh8" },
+  { type: "photos", url: "https://photos.app.goo.gl/jkwbLdBzeuWFxAMv7" },
   { type: "drive", url: "https://drive.google.com/drive/folders/1G_aiTbO2k-kYRv-u9RxjYsQx4xFGuf8M" },
 ];

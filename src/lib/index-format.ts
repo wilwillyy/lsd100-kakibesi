@@ -41,10 +41,15 @@ export const isDrive = (id: string) => id.startsWith("d:");
 /** Upstream image URL without size suffix (what /api/img accepts as `u`). */
 export const baseUrl = (id: string) => (isDrive(id) ? DRIVE_IMG_PREFIX + id.slice(2) : PHOTO_PREFIX + id);
 
-/** Upstream URL of a resized rendition. */
-export const upstreamUrl = (id: string, w: number) => `${baseUrl(id)}=w${w}`;
+/** Direct Google CDN URL of a resized rendition (fastest for <img> tags with referrerPolicy="no-referrer"). */
+export const directImgUrl = (id: string, w: number) => `${baseUrl(id)}=w${w}`;
+export const upstreamUrl = directImgUrl;
 
-/** Same-origin, CDN-cached proxy URL of a resized rendition (safe for canvas + <img>). */
+/** Alternate Google Drive thumbnail endpoint used as automatic fallback when lh3 throttles or 404s. */
+export const driveThumbFallbackUrl = (id: string, w: number) =>
+  isDrive(id) ? `https://drive.google.com/thumbnail?id=${id.slice(2)}&sz=w${w}` : imgUrl(id, w);
+
+/** Same-origin, CDN-cached proxy URL of a resized rendition (required for <canvas> CORS and final fallback). */
 export const imgUrl = (id: string, w: number) => `/api/img?u=${encodeURIComponent(baseUrl(id))}&w=${w}`;
 
 /** URL of the full-quality original (upstream). */
