@@ -3,25 +3,226 @@
 @tailwind utilities;
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #04060c;
+  --panel: #0a0f1e;
+  --blue: #1E46E6;
+  --blue-hi: #4E73FF;
+  --blue-glow: #2f5bff;
+  --ink: #f4f5f7;
+  --dim: #8a8f9c;
+  --hair: rgba(255, 255, 255, 0.1);
+  --row-h: 168px; /* target photo row height: phones */
+}
+@media (min-width: 640px) {
+  :root { --row-h: 210px; } /* large phones / small tablets */
+}
+@media (min-width: 900px) {
+  :root { --row-h: 230px; } /* tablets landscape / laptops */
+}
+@media (min-width: 1536px) {
+  :root { --row-h: 270px; }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  color: var(--ink);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(80% 50% at 62% 18%, rgba(30, 70, 230, 0.16), transparent 60%),
+    repeating-linear-gradient(115deg, rgba(255, 255, 255, 0.022) 0 1px, transparent 1px 11px),
+    repeating-linear-gradient(25deg, rgba(255, 255, 255, 0.016) 0 1px, transparent 1px 14px);
+  background-attachment: fixed;
+  font-family: var(--font-sans), system-ui, sans-serif;
 }
 
-@layer utilities {
-  .text-balance {
-    text-wrap: balance;
+::selection {
+  background: var(--blue);
+  color: #fff;
+}
+
+.font-display {
+  font-family: var(--font-display), sans-serif;
+}
+.font-narrow {
+  font-family: var(--font-narrow), sans-serif;
+}
+
+/* ---------- Hero (lsd100.id exact background & glowing 100 watermark) ---------- */
+.hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-bottom: 1px solid var(--hair);
+  background:
+    radial-gradient(80% 60% at 62% 42%, rgba(30, 70, 230, 0.24), transparent 60%),
+    repeating-linear-gradient(115deg, rgba(255, 255, 255, 0.022) 0 1px, transparent 1px 11px),
+    repeating-linear-gradient(25deg, rgba(255, 255, 255, 0.016) 0 1px, transparent 1px 14px),
+    #04060c;
+}
+.hero-num {
+  pointer-events: none;
+  user-select: none;
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 2vw;
+  overflow: hidden;
+}
+.hero-num span {
+  font-family: var(--font-display), sans-serif;
+  font-weight: 900;
+  font-style: italic;
+  font-size: clamp(230px, 44vw, 620px);
+  line-height: 0.78;
+  letter-spacing: -0.05em;
+  color: #0d1533;
+  text-shadow:
+    0 0 3px rgba(78, 115, 255, 0.6),
+    0 0 40px rgba(47, 91, 255, 0.55),
+    0 0 110px rgba(30, 70, 230, 0.5);
+  transform: translate(4%, 2%);
+}
+.hero-scrim {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(90deg, rgba(4, 6, 12, 0.9) 0%, rgba(4, 6, 12, 0.55) 35%, rgba(4, 6, 12, 0.1) 68%),
+    linear-gradient(0deg, rgba(4, 6, 12, 0.92) 4%, transparent 32%);
+}
+
+/* ---------- Race bib input card ---------- */
+.bib-card {
+  position: relative;
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow:
+    0 30px 70px -18px rgba(0, 0, 0, 0.85),
+    0 0 45px -10px rgba(47, 91, 255, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.85) inset;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+.bib-card:focus-within {
+  transform: translateY(-2px);
+  box-shadow:
+    0 36px 80px -20px rgba(0, 0, 0, 0.9),
+    0 0 60px -8px rgba(78, 115, 255, 0.65),
+    0 0 0 3px var(--blue-hi);
+}
+.bib-pin {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.45);
+}
+.bib-digits {
+  font-family: var(--font-display), sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+}
+
+/* ---------- Photo tiles ---------- */
+.tile {
+  background: linear-gradient(110deg, #0a0f1e 30%, #131d38 50%, #0a0f1e 70%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.35s ease;
+}
+.tile img {
+  transition: opacity 0.5s ease, transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.tile:active {
+  transform: scale(0.97);
+}
+/* hover effects only on devices that can hover (not phones / tablets) */
+@media (hover: hover) {
+  .tile:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 18px 38px -12px rgba(30, 70, 230, 0.45);
+    z-index: 2;
+  }
+  .tile:hover img {
+    transform: scale(1.06);
+  }
+}
+/* touch devices: BIB labels are always visible (there is no hover) */
+@media (hover: none) {
+  .tile .bibs {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes sheet {
+  from { opacity: 0; transform: translateY(40px); }
+  to { opacity: 1; transform: none; }
+}
+.animate-fade { animation: fade 0.25s ease-out both; }
+.animate-sheet { animation: sheet 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.animate-rise {
+  animation: rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.animate-pop {
+  animation: pop 0.25s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
   }
 }
