@@ -95,7 +95,7 @@ export default function Gallery() {
   };
 
   const q = query.trim();
-  const { visible, undetected, total } = useMemo(() => {
+  const { visible, undetected } = useMemo(() => {
     const all = (index?.photos ?? []).filter((p) => source === null || (p.s ?? 0) === source);
     const undetected = all.filter((p) => p.b && p.b.length === 0).length;
     let visible = all;
