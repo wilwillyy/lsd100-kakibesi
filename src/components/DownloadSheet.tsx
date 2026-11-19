@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { canvasToBlob, renderCard, type CardStyle } from "@/lib/card";
-import { downloadUrl, imgUrl, type IndexedPhoto } from "@/lib/index-format";
+import { directImgUrl, downloadUrl, driveThumbFallbackUrl, imgUrl, type IndexedPhoto } from "@/lib/index-format";
 
 type Mode = "original" | CardStyle;
 
@@ -17,6 +17,8 @@ const slug = (s: string) => s.replace(/[^\w]+/g, "_").replace(/^_+|_+$/g, "") ||
 export default function DownloadSheet({ photo, title, onClose }: { photo: IndexedPhoto; title: string; onClose: () => void }) {
   const [mode, setMode] = useState<Mode>("card");
   const [preview, setPreview] = useState<string>("");
+  const [renderedBlob, setRenderedBlob] = useState<Blob | null>(null);
+  const [origStage, setOrigStage] = useState(0);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [canShare, setCanShare] = useState(false);
@@ -26,7 +28,7 @@ export default function DownloadSheet({ photo, title, onClose }: { photo: Indexe
   const base = `${slug(title)}_${bibs[0] ? `BIB${bibs[0]}_` : ""}${(photo.n ?? photo.id.slice(-6)).replace(/\.\w+$/, "")}`;
 
   useEffect(() => {
-    setCanShare(typeof navigator !== "undefined" && "canShare" in navigator && typeof navigator.share === "function");
+    setCanShare(typeof navigator !== "undefined" && typeof navigator.share === "function");
   }, []);
 
   useEffect(() => {
@@ -35,42 +37,79 @@ export default function DownloadSheet({ photo, title, onClose }: { photo: Indexe
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // live preview
+  const getOriginalPreviewSrc = (id: string, stage: number) => {
+    if (stage === 0) return directImgUrl(id, 1024);
+    if (stage === 1) return driveThumbFallbackUrl(id, 1024);
+    return imgUrl(id, 1024);
+  };
+
+  // Pre-render full-res 1080px card/story once so preview, download, and share are instant & crisp
   useEffect(() => {
     const my = ++reqId.current;
     setPreview("");
+    setRenderedBlob(null);
+    setOrigStage(0);
+
     if (mode === "original") {
-      setPreview(imgUrl(photo.id, 1024));
+      setPreview(getOriginalPreviewSrc(photo.id, 0));
       return;
     }
-    renderCard({ style: mode, title, bibs, src: imgUrl(photo.id, 1024), width: 540 })
-      .then((c) => my === reqId.current && setPreview(c.toDataURL("image/jpeg", 0.85)))
-      .catch(() => my === reqId.current && setPreview(imgUrl(photo.id, 1024)));
+
+    let objectUrl = "";
+    renderCard({ style: mode, title, bibs, src: imgUrl(photo.id, 1600), width: 1080 })
+      .then((c) => canvasToBlob(c, 0.92))
+      .then((blob) => {
+        if (my !== reqId.current) return;
+        objectUrl = URL.createObjectURL(blob);
+        setRenderedBlob(blob);
+        setPreview(objectUrl);
+      })
+      .catch(() => {
+        if (my !== reqId.current) return;
+        setPreview(getOriginalPreviewSrc(photo.id, 0));
+      });
+
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
   }, [mode, photo.id, title, bibs]);
 
   const flash = (m: string) => {
     setToast(m);
-    setTimeout(() => setToast(""), 2400);
+    setTimeout(() => setToast(""), 2600);
   };
 
-  const makeBlob = async () => {
-    const c = await renderCard({ style: mode as CardStyle, title, bibs, src: imgUrl(photo.id, 2048), width: 1080 });
-    return canvasToBlob(c);
+  const getOrMakeBlob = async (): Promise<Blob> => {
+    if (mode !== "original" && renderedBlob) return renderedBlob;
+    if (mode === "original") {
+      const res = await fetch(imgUrl(photo.id, 2048));
+      if (!res.ok) throw new Error("Gagal mengambil foto");
+      return res.blob();
+    }
+    const c = await renderCard({ style: mode as CardStyle, title, bibs, src: imgUrl(photo.id, 1600), width: 1080 });
+    return canvasToBlob(c, 0.92);
+  };
+
+  const triggerDownload = (href: string, filename?: string, revoke = false) => {
+    const a = document.createElement("a");
+    a.href = href;
+    if (filename) a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    if (revoke) setTimeout(() => URL.revokeObjectURL(href), 5000);
   };
 
   const save = async () => {
     setBusy(true);
     try {
-      const a = document.createElement("a");
       if (mode === "original") {
-        a.href = downloadUrl(photo.id, `${base}.jpg`);
+        triggerDownload(downloadUrl(photo.id, `${base}.jpg`), `${base}.jpg`);
       } else {
-        a.href = URL.createObjectURL(await makeBlob());
-        a.download = `${base}_${mode}.jpg`;
+        const blob = await getOrMakeBlob();
+        const url = URL.createObjectURL(blob);
+        triggerDownload(url, `${base}_${mode}.jpg`, true);
       }
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
       flash("Foto sedang diunduh ✓");
     } catch {
       flash("Gagal mengunduh, coba lagi");
@@ -82,12 +121,20 @@ export default function DownloadSheet({ photo, title, onClose }: { photo: Indexe
   const share = async () => {
     setBusy(true);
     try {
-      const blob = mode === "original" ? await (await fetch(imgUrl(photo.id, 2048))).blob() : await makeBlob();
-      const file = new File([blob], `${base}${mode === "original" ? "" : `_${mode}`}.jpg`, { type: "image/jpeg" });
-      if (navigator.canShare?.({ files: [file] })) await navigator.share({ files: [file], title });
-      else flash("Perangkat ini tidak mendukung berbagi file");
-    } catch {
-      /* user cancelled the share sheet */
+      const blob = await getOrMakeBlob();
+      const filename = `${base}${mode === "original" ? "" : `_${mode}`}.jpg`;
+      const file = new File([blob], filename, { type: "image/jpeg" });
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title });
+      } else {
+        const url = URL.createObjectURL(blob);
+        triggerDownload(url, filename, true);
+        flash("Foto diunduh untuk dibagikan ke Story ✓");
+      }
+    } catch (e) {
+      if ((e as Error)?.name !== "AbortError") {
+        flash("Gagal membagikan, coba klik Unduh");
+      }
     } finally {
       setBusy(false);
     }
@@ -107,9 +154,17 @@ export default function DownloadSheet({ photo, title, onClose }: { photo: Indexe
           {preview ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              key={preview.slice(-24) + mode}
+              key={preview.slice(-24) + mode + origStage}
               src={preview}
+              referrerPolicy="no-referrer"
               alt="Pratinjau"
+              onError={() => {
+                if (mode === "original" && origStage < 2) {
+                  const next = origStage + 1;
+                  setOrigStage(next);
+                  setPreview(getOriginalPreviewSrc(photo.id, next));
+                }
+              }}
               className="animate-pop max-h-[42dvh] max-w-full rounded-2xl object-contain shadow-2xl ring-1 ring-white/10 md:max-h-[72dvh]"
             />
           ) : (
@@ -166,10 +221,10 @@ export default function DownloadSheet({ photo, title, onClose }: { photo: Indexe
               {busy ? <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <DownloadIcon />}
               {busy ? "Menyiapkan…" : "Unduh"}
             </button>
-            {canShare && (
+            {(canShare || mode === "story") && (
               <button
                 onClick={share}
-                disabled={busy}
+                disabled={busy || (mode !== "original" && !preview)}
                 className="font-narrow flex h-12 items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 text-base font-bold uppercase tracking-wider text-[#f4f5f7] transition hover:bg-white/10 active:scale-[0.98] disabled:opacity-60"
               >
                 <ShareIcon />

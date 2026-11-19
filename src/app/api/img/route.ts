@@ -10,34 +10,43 @@ export async function GET(req: NextRequest) {
     return new NextResponse("bad url", { status: 400 });
   }
 
-  let res = await fetch(`${base}=w${w}`, { headers: { "User-Agent": UA } });
+  try {
+    let res = await fetch(`${base}=w${w}`, { headers: { "User-Agent": UA }, redirect: "follow" });
 
-  // Fallback for Google Drive files if lh3 returns 403/404/429
-  if (!res.ok && base.includes("/d/")) {
-    const driveId = base.split("/d/")[1];
-    res = await fetch(`https://drive.google.com/thumbnail?id=${driveId}&sz=w${w}`, {
-      headers: { "User-Agent": UA },
-      redirect: "follow",
-    });
-    if (!res.ok) {
-      res = await fetch(`https://drive.usercontent.google.com/download?id=${driveId}&export=download&confirm=t`, {
+    // Fallback for Google Drive files if lh3 returns 403/404/429
+    if ((!res.ok || !(res.headers.get("content-type") ?? "").startsWith("image/")) && base.includes("/d/")) {
+      const driveId = base.split("/d/")[1];
+      res = await fetch(`https://drive.google.com/thumbnail?id=${driveId}&sz=w${w}`, {
         headers: { "User-Agent": UA },
         redirect: "follow",
       });
+      if (!res.ok) {
+        res = await fetch(`https://drive.usercontent.google.com/download?id=${driveId}&export=download&confirm=t`, {
+          headers: { "User-Agent": UA },
+          redirect: "follow",
+        });
+      }
     }
-  }
 
-  if (!res.ok || !res.body) {
-    return new NextResponse("upstream error", {
-      status: res.status === 429 ? 503 : res.status,
+    if (!res.ok || !res.body) {
+      return new NextResponse("upstream error", {
+        status: res.status === 429 ? 503 : res.status || 502,
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+
+    const ct = res.headers.get("content-type") ?? "image/jpeg";
+    return new NextResponse(res.body, {
+      headers: {
+        "Content-Type": ct.startsWith("image/") ? ct : "image/jpeg",
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "public, max-age=31536000, s-maxage=31536000, stale-while-revalidate=86400, immutable",
+      },
+    });
+  } catch {
+    return new NextResponse("upstream fetch failed", {
+      status: 502,
       headers: { "Cache-Control": "no-store" },
     });
   }
-
-  return new NextResponse(res.body, {
-    headers: {
-      "Content-Type": res.headers.get("content-type") ?? "image/jpeg",
-      "Cache-Control": "public, max-age=31536000, s-maxage=31536000, stale-while-revalidate=86400, immutable",
-    },
-  });
 }
