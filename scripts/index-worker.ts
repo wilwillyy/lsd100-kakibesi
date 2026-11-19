@@ -8,7 +8,7 @@ import sharp from "sharp";
 import * as ort from "onnxruntime-web";
 import { PpOcr } from "../src/lib/ppocr";
 import { readBibsFromImg } from "../src/lib/bibs";
-import { originalUrl, upstreamUrl } from "../src/lib/index-format";
+import { isDrive, originalUrl, upstreamUrl } from "../src/lib/index-format";
 
 const ROOT = path.resolve(__dirname, "..");
 const MODELS = path.join(ROOT, "public/models");
@@ -18,15 +18,15 @@ async function download(url: string): Promise<Buffer> {
   for (let attempt = 0; ; attempt++) {
     let status = 0;
     try {
-      const res = await fetch(url, { headers: { "User-Agent": UA } });
+      const res = await fetch(url, { headers: { "User-Agent": UA }, redirect: "follow" });
       if (res.ok) return Buffer.from(await res.arrayBuffer());
       status = res.status;
     } catch (e) {
-      if (attempt >= 6) throw e;
+      if (attempt >= 5) throw e;
     }
     if (status && status !== 429 && status < 500) throw new Error(`HTTP ${status}`);
-    if (attempt >= 6) throw new Error("download failed after retries");
-    await new Promise((r) => setTimeout(r, 1500 * 2 ** attempt)); // back off on 429 / 5xx
+    if (attempt >= 5) throw new Error("download failed after retries");
+    await new Promise((r) => setTimeout(r, 1200 * 2 ** attempt)); // back off on 429 / 5xx
   }
 }
 
@@ -35,7 +35,15 @@ async function fetchAndDecode(id: string) {
   try {
     buf = await download(upstreamUrl(id, 1280));
   } catch {
-    buf = await download(originalUrl(id));
+    if (isDrive(id)) {
+      try {
+        buf = await download(`https://drive.google.com/thumbnail?id=${id.slice(2)}&sz=w1280`);
+      } catch {
+        buf = await download(originalUrl(id));
+      }
+    } else {
+      buf = await download(originalUrl(id));
+    }
   }
   return sharp(buf)
     .resize({ width: 1280, withoutEnlargement: true })

@@ -35,23 +35,29 @@ async function main() {
   const seen = new Set<string>();
   for (let si = 0; si < SOURCES.length; si++) {
     const src = SOURCES[si];
-    console.log(`Membaca ${src.type === "drive" ? "folder Drive" : "album Photos"}: ${src.url}`);
-    let title: string;
-    let items: IndexedPhoto[];
-    if (src.type === "photos") {
-      const album = await fetchAlbum(src.url);
-      title = album.title;
-      items = album.items.map((p) => ({ id: p.id.replace(PHOTO_PREFIX, ""), w: p.w, h: p.h, s: si }));
-    } else {
-      const folder = await fetchDriveFolder(src.url);
-      title = folder.title;
-      // Drive listing has no dimensions; the worker fills w/h while indexing.
-      items = folder.files.map((f) => ({ id: `d:${f.id}`, w: 0, h: 0, n: f.name, s: si }));
+    const urlList = src.urls?.length ? src.urls : src.url ? [src.url] : [];
+    let title = src.title || "";
+    const items: IndexedPhoto[] = [];
+
+    for (const u of urlList) {
+      console.log(`Membaca ${src.type === "drive" ? "folder Drive" : "album Photos"}: ${u}`);
+      if (src.type === "photos") {
+        const album = await fetchAlbum(u);
+        if (!title) title = album.title;
+        items.push(...album.items.map((p) => ({ id: p.id.replace(PHOTO_PREFIX, ""), w: p.w, h: p.h, s: si })));
+      } else {
+        const folder = await fetchDriveFolder(u);
+        if (!title) title = folder.title;
+        // Drive listing has no dimensions; the worker fills w/h while indexing.
+        items.push(...folder.files.map((f) => ({ id: `d:${f.id}`, w: 0, h: 0, n: f.name, s: si })));
+        console.log(`    • Sub-sumber "${folder.title}": ${folder.files.length} foto`);
+      }
     }
-    items = items.filter((p) => !seen.has(p.id) && seen.add(p.id));
-    sources.push({ type: src.type, url: src.url, title, count: items.length });
-    listed.push(...items);
-    console.log(`  ↳ "${title}": ${items.length} foto. (Bandingkan dengan jumlah di sumbernya; kalau kurang lihat README.)`);
+
+    const deduped = items.filter((p) => !seen.has(p.id) && seen.add(p.id));
+    sources.push({ type: src.type, url: urlList[0] ?? "", title: title || "Album", count: deduped.length });
+    listed.push(...deduped);
+    console.log(`  ↳ "${title}": total ${deduped.length} foto.`);
   }
 
   // 2) Resume from the previous index
